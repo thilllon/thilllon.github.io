@@ -1,14 +1,32 @@
+require("dotenv").config({
+  path: `.env.${process.env.NODE_ENV}`,
+});
+const { v4: uuid } = require("uuid");
+const pathPrefix =
+  process.env.REPO_NAME?.split(".github.io")[1] === ""
+    ? ""
+    : "/" + process.env.REPO_NAME;
+// const buildId = uuid();
+// process.env.buildId = buildId;
+// console.log(buildId);
+// console.log(buildId);
+console.log(pathPrefix);
+console.log(pathPrefix);
+console.log(process.env.NODE_ENV);
+console.log(process.env.NODE_ENV);
+
 module.exports = {
+  pathPrefix,
   siteMetadata: {
     title: `Gatsby Starter Blog`,
     author: {
-      name: `Kyle Mathews`,
-      summary: `who lives and works in San Francisco building useful things.`,
+      name: `Thilllon`,
+      summary: `who lives and works in Seoul building useful things.`,
     },
     description: `A starter blog demonstrating what Gatsby can do.`,
     siteUrl: `https://gatsbystarterblogsource.gatsbyjs.io/`,
     social: {
-      twitter: `kylemathews`,
+      twitter: `thilllon`,
     },
   },
   plugins: [
@@ -75,15 +93,15 @@ module.exports = {
         feeds: [
           {
             serialize: ({ query: { site, allMarkdownRemark } }) => {
-              return allMarkdownRemark.nodes.map(node => {
+              return allMarkdownRemark.nodes.map((node) => {
                 return Object.assign({}, node.frontmatter, {
                   description: node.excerpt,
                   date: node.frontmatter.date,
                   url: site.siteMetadata.siteUrl + node.fields.slug,
                   guid: site.siteMetadata.siteUrl + node.fields.slug,
                   custom_elements: [{ "content:encoded": node.html }],
-                })
-              })
+                });
+              });
             },
             query: `
               {
@@ -126,5 +144,13 @@ module.exports = {
     // this (optional) plugin enables Progressive Web App + Offline functionality
     // To learn more, visit: https://gatsby.dev/offline
     // `gatsby-plugin-offline`,
+    `gatsby-plugin-no-sourcemaps`,
+    {
+      resolve: "gatsby-plugin-remove-console",
+      options: {
+        // will be removed all console calls except these
+        exclude: process.env.NODE_ENV === "production" ? [] : ["error", "warn"],
+      },
+    },
   ],
-}
+};

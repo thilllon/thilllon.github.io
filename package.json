@@ -12,7 +12,7 @@
     "sitemap": "ts-node --project tsconfig.node.json ./scripts/generate-static.ts",
     "rss": "ts-node --project tsconfig.node.json ./scripts/generate-rss.ts",
     "serve": "npx http-server out",
-    "github": "gh-pages -d out"
+    "github-pages": "gh-pages --dist out --version --nojekyll --no-history"
   },
   "dependencies": {
     "@headlessui/react": "^1.7.5",

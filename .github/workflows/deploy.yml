@@ -1,0 +1,114 @@
+# Deploys the site to GitHub Pages. This repository holds no site files: the built site is kept on the
+# `dist` branch of the private source repository and is fetched here at deploy time, so nothing is ever
+# committed to this repository and its history stays at two commits.
+#
+# The source repository starts a deploy by re-creating the `publish` tag on the main commit.
+name: Deploy to GitHub Pages
+
+on:
+  push:
+    tags: [publish]
+  # Re-deploys the current build by hand from the Actions tab.
+  workflow_dispatch:
+
+permissions: {}
+
+# One deployment at a time, and never interrupt one halfway.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      pages: write # create the Pages deployment
+      id-token: write # prove the deployment comes from this workflow
+      actions: write # delete the uploaded artifact and earlier runs afterwards
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Fetch the built site
+        env:
+          # Read-only deploy key of the source repository, stored as a secret of the github-pages environment.
+          SOURCE_READ_KEY: ${{ secrets.SOURCE_READ_KEY }}
+        run: |
+          if [ -z "$SOURCE_READ_KEY" ]; then
+            echo "::error::The SOURCE_READ_KEY secret is not set."
+            exit 1
+          fi
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$SOURCE_READ_KEY" > ~/.ssh/source_read_key
+          chmod 600 ~/.ssh/source_read_key
+          # Pinned host key (https://api.github.com/meta).
+          echo 'github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl' > ~/.ssh/known_hosts
+          export GIT_SSH_COMMAND="ssh -i $HOME/.ssh/source_read_key -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$HOME/.ssh/known_hosts"
+          git clone --quiet --depth 1 --single-branch --branch dist \
+            git@github.com:thilllon/thilllon.github.io-source.git "$RUNNER_TEMP/site"
+          # Served as /build.txt, so the deploy step can tell when this build is the one that is live.
+          git -C "$RUNNER_TEMP/site" rev-parse HEAD > "$RUNNER_TEMP/site/build.txt"
+          rm -rf "$RUNNER_TEMP/site/.git" ~/.ssh/source_read_key
+          test -f "$RUNNER_TEMP/site/index.html"
+          # Packed the way actions/upload-pages-artifact does it, but without listing every file in this
+          # public log: the names of posts that are taken down later would stay readable there.
+          tar --dereference --hard-dereference --directory "$RUNNER_TEMP/site" \
+            -cf "$RUNNER_TEMP/artifact.tar" --exclude=.git --exclude=.github .
+      # The action is pinned to a commit because this file is never updated.
+      - name: Upload the site as a Pages artifact
+        id: upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: github-pages
+          path: ${{ runner.temp }}/artifact.tar
+          retention-days: 1
+          if-no-files-found: error
+      - name: Deploy to GitHub Pages
+        id: deployment
+        # Calls the Pages API directly, which needs no action that could stop working while this file
+        # stays as it is. Pages names a deployment after a commit of this repository, and every deploy
+        # here runs on the same commit, so the API reports the previous deployment's status right
+        # away. The step therefore waits until the site itself serves this build.
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT_ID: ${{ steps.upload.outputs.artifact-id }}
+        run: |
+          build=$(cat "$RUNNER_TEMP/site/build.txt")
+          oidc_token=$(curl -sSf -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" "${ACTIONS_ID_TOKEN_REQUEST_URL}" | jq -r .value)
+          echo "::add-mask::${oidc_token}"
+          page_url=$(gh api -X POST "repos/${GITHUB_REPOSITORY}/pages/deployments" \
+            -F artifact_id="${ARTIFACT_ID}" -f pages_build_version="${GITHUB_SHA}" -f oidc_token="${oidc_token}" \
+            --jq .page_url)
+          echo "page_url=${page_url}" >> "$GITHUB_OUTPUT"
+          for attempt in $(seq 1 60); do
+            status=$(gh api "repos/${GITHUB_REPOSITORY}/pages/deployments/${GITHUB_SHA}" --jq .status)
+            live=$(curl -s "${page_url}build.txt?attempt=${GITHUB_RUN_ID}-${attempt}" | head -c 64 | tr -d '[:space:]')
+            echo "deployment: ${status}, live build: ${live:0:12}, this build: ${build:0:12}"
+            if [ "$live" = "$build" ]; then exit 0; fi
+            case "$status" in
+              deployment_failed | deployment_content_failed | deployment_cancelled | deployment_lost)
+                echo "::error::The Pages deployment failed: ${status}"
+                exit 1
+                ;;
+            esac
+            sleep 5
+          done
+          echo "::error::The site did not serve this build within 5 minutes."
+          exit 1
+      - name: Delete the uploaded artifact and earlier runs
+        # The deployment keeps its own copy of the site. Without this, earlier builds would stay
+        # downloadable here, and the run list would keep a log for every past publish.
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT_ID: ${{ steps.upload.outputs.artifact-id }}
+        run: |
+          if [ -n "$ARTIFACT_ID" ]; then
+            gh api -X DELETE "repos/${GITHUB_REPOSITORY}/actions/artifacts/${ARTIFACT_ID}"
+          fi
+          gh api --paginate "repos/${GITHUB_REPOSITORY}/actions/runs?status=completed&per_page=100" \
+            --jq ".workflow_runs[] | select(.id != ${GITHUB_RUN_ID}) | .id" |
+            while read -r run_id; do
+              gh api -X DELETE "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}"
+            done
